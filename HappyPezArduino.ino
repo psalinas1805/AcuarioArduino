@@ -1,8 +1,7 @@
-
 #include <LiquidCrystal_I2C.h> // Pantalla lcd
 #include <OneWire.h>           //sensor temperatura
 #include <DallasTemperature.h> //sensor temperatura
-#include <TimeLib.h>
+//#include <TimeLib.h>
 
 #include "WiFiEsp.h"
 
@@ -38,11 +37,20 @@ short filtroMax = 0;
 short aireMin = 0;
 short aireMax = 0;
 short nivelAgua = 0;
+
+// Estado de los artefactos 0=Apagado - 1=Encendido
 short scalefactor = 0;
 short sventilador = 0;
 short sluz = 0;
 short sfiltro = 0;
 short saire = 0;
+short tempProm = 0;
+
+//Modo de los artefactos 0=Manual - 1=Automatico
+
+short modoLuz = 0;
+short modoFiltro = 0;
+short modoAire= 0;
 
 byte setDia = 0;   // Simula luz dia tarde y noche
 byte setNoche = 0; // Simula luz dia tarde y noche
@@ -54,6 +62,7 @@ char ssid[] = "iPhone de Pablo"; // Nombre del SSID (Red de internet wifi)
 char pass[] = "aaaaaaaaaa";      // Password de la red
 
 String fecha = "";
+String horaActual = "";
 /* Configuracion de horarios. */
 
 float tempC = 0;
@@ -61,17 +70,14 @@ float Ph = 0;
 unsigned long currentMillis = 70000;
 unsigned long prevMillisLectura = 0; // Guarda la ultima hora de Lectura de datos
 unsigned long prevMillisGetConfig = 0;
-unsigned long prevMillisAmanecer = 0;
+
 
 long prevMillisPutData = 0; // Guarda la ultima hora de actualizacion de la bomba
-long prevMillisLuz = 0;     // Guarda la ultima hora de actualizacion de la bomba
-long prevMillisFiltro = 0;  // Guarda la ultima hora de actualizacion de la bomba
-long prevMillisAire = 0;    // Guarda la ultima hora de actualizacion de la bomba
+long prevMillisArtefacto = 0;     // Guarda la ultima hora de actualizacion de la bomba
+
 
 #define intervalPutData 10000 // Envia datos via wifi cada x milisegundos (5000 = 5 segundos)
-#define intervalLuz 60000     // Revisa luz dia o noche cada x milisegundos (60000 = 60 segundos)
-#define intervalFiltro 60000  // Revisa encendido u apagado cada x milisegundos
-#define intervalAire 60000    // Revisa encendido u apagado cada x milisegundos
+#define intervalArtefacto 60000     // Revisa luz dia o noche cada x milisegundos (60000 = 60 segundos)
 
 #define intervalLectura 5000    // Realiza mediciones cada x milisegundos
 #define intervalGetConfig 60000 // Segundos de espera para consultar configuraciones
@@ -85,6 +91,9 @@ long prevMillisAire = 0;    // Guarda la ultima hora de actualizacion de la bomb
 #define rAire 7
 #define rFiltro 8
 
+//Pin ventiladores
+#define rVentilador 4
+
 byte sw = 0;
 
 //Pin cinta led
@@ -92,16 +101,14 @@ byte sw = 0;
 #define greenPin 11
 #define redPin 9
 
-//Pin ventiladores
-#define ventilador 4
-
 //Pin sensor flotador nivel de agua
 #define sNivelLiq 5
-byte nivel = 0;
+char nivel[3];
 
 void setup()
 {
 
+  strcpy(nivel, "NOK");
   Serial.begin(9600);  // Inicializa puerto serial para monitor
   Serial1.begin(9600); // Inicializa puerto serial para WiFi
 
@@ -109,7 +116,7 @@ void setup()
  *  MODO OUTPUT: Solo envio de pulsos desde arduino hacia el dispositivo
  *  MODO INPUT: Solo lectura de datos desde el dispositivo, sensor, etc.
  */
-  pinMode(ventilador, OUTPUT); //
+
   pinMode(redPin, OUTPUT);
   pinMode(greenPin, OUTPUT);
   pinMode(bluePin, OUTPUT);
@@ -117,8 +124,9 @@ void setup()
   pinMode(rCalefactor, OUTPUT);
   pinMode(rAire, OUTPUT);
   pinMode(rFiltro, OUTPUT);
+  pinMode(rVentilador, OUTPUT);
 
-  /* Inicializa lso pines de relay apagados  HIGH=Apagado , LOW= Encendido */
+  /* Inicializa los pines de relay apagados  HIGH=Apagado , LOW= Encendido */
   digitalWrite(rCalefactor, HIGH);
   digitalWrite(rAire, HIGH);
   digitalWrite(rFiltro, HIGH);
@@ -129,7 +137,7 @@ void setup()
   lcd.print(F("Iniciando sistema"));
   lcd.setCursor(5, 2);
   lcd.print(F("Happy Pez"));
-  
+
   pinMode(sNivelLiq, INPUT); //sensor de nivel de liquido
   Serial.println(F("********* INICIANDO SISTEMA ***********"));
 
@@ -138,8 +146,8 @@ void setup()
   getDate();
   getConfigAll();
   getArtefact();
+  getModo();
   /* Inicializa pantalla led */
-
 
   sensors.begin(); //Inicia sensor de temperatura
   numberOfDevices = sensors.getDeviceCount();
@@ -155,18 +163,7 @@ void setup()
   analogWrite(bluePin, 0);
 }
 
-int availableMemory()
-{
-  int size = 2048; // Use 2048 with ATmega328
-  byte *buf;
 
-  while ((buf = (byte *)malloc(--size)) == NULL)
-    ;
-
-  free(buf);
-
-  return size;
-}
 //*************************************************
 //*                                               *
 //*                  LOOP SECTION                 *
@@ -187,74 +184,108 @@ void loop()
     Serial.println(F("Obtener configuraciones"));
     getConfigAll();
     getArtefact();
+    getModo();
     prevMillisGetConfig = millis();
   }
 
   /********************************
- * Control horario para luz
+ * Control horario para luz 
  *******************************/
-  currentMillis = millis();
-  String horaActual = fecha.substring(11, 16);
-  horaActual.replace(":", "");
-
-  if ((currentMillis - prevMillisLuz > intervalLuz) || (started == 0))
+  if (modoLuz = 0) // 0 = Manual - 1 = Automatico
   {
-    Serial.println("LUZ DIA: " + horaActual + " - " + luzDiaMin + " - " + luzDiaMax);
-
-    if ((horaActual.toInt() > luzDiaMin) && (horaActual.toInt() < luzDiaMax) && setDia == 0)
+    if (sluz == 0) //  0 = Apagado - 1 = Encendido
     {
-      Serial.println("Enciende Dia");
-      amanecer();
-      setDia = 1;
-      setNoche = 0;
+      analogWrite(redPin, 0);
+      analogWrite(greenPin, 0);
+      analogWrite(bluePin, 0);
     }
-    Serial.println("LUZ DIA: " + horaActual + " - " + luzNocheMin + " - " + luzNocheMax);
-    if (((horaActual.toInt() > luzNocheMin) || (horaActual.toInt() < luzNocheMax)) && (setNoche == 0))
+    else
     {
-      Serial.println("Enciende Noche");
-      anochecer();
-      setNoche = 1;
-      setDia = 0;
+      luzAuto();
     }
-    prevMillisLuz = millis();
   }
+  else
+  {
+    luzAuto();
+  }
+
   /********************************
  * Control horario para Filtro
  *******************************/
   currentMillis = millis();
-  if ((currentMillis - prevMillisFiltro > intervalFiltro) || (started == 0))
+  if (modoFiltro = 0) // 0 = Manual - 1 = Automatico
   {
-    Serial.println("Hora Actual: " + horaActual + " > " + filtroMin + " < " + filtroMax);
-    if ((horaActual.toInt() > filtroMin) && (horaActual.toInt() < filtroMax))
+    if (sfiltro == 0) //  0 = Apagado -  1 = Encendido
     {
-      Serial.println("Enciende filtro");
-      enciendeArtefacto(rFiltro);
-    }
-    else
-    {
-      Serial.println("Apaga filtro");
+      Serial.println("Apagado Manual de filtro");
       apagaArtefacto(rFiltro);
     }
-    prevMillisFiltro = millis();
-  }
-
-  currentMillis = millis();
-  if ((currentMillis - prevMillisAire > intervalAire) || (started == 0))
-  {
-    Serial.println("Hora Actual: " + horaActual + " > " + aireMin + " < " + aireMax);
-    if ((horaActual.toInt() > aireMin) && (horaActual.toInt() < aireMax))
+    else
     {
-      Serial.println("Enciende Aire");
-      enciendeArtefacto(rAire);
+      Serial.println("Encendido Manual de filtro");
+      enciendeArtefacto(rFiltro);
+    }
+  }
+  else
+  {
+    if ((currentMillis - prevMillisArtefacto > intervalArtefacto) || (started == 0))
+    {
+      horaActual = fecha.substring(11, 16);
+      horaActual.replace(":", "");
+      Serial.println("Hora Actual: " + horaActual + " > " + filtroMin + " < " + filtroMax);
+      if ((horaActual.toInt() > filtroMin) && (horaActual.toInt() < filtroMax))
+      {
+        Serial.println("Encendido automatico de filtro");
+        enciendeArtefacto(rFiltro);
+      }
+      else
+      {
+        Serial.println("Apagado automatico de filtro");
+        apagaArtefacto(rFiltro);
+      }
+      prevMillisArtefacto = millis();
+    }
+  }
+  /********************************
+ * Control horario para Aire
+ *******************************/
+  if (modoAire = 0) // 0 = Manual - 1 = Automatico
+  {
+    if (saire == 0) //  0 = Apagado -  1 = Encendido
+    {
+      Serial.println("Apagado Manual de aire");
+      apagaArtefacto(rAire);
     }
     else
     {
-      Serial.println("Apaga Aire");
-      apagaArtefacto(rAire);
+      Serial.println("Encendido Manual de aire");
+      enciendeArtefacto(saire);
     }
-    prevMillisAire = millis();
   }
-
+  else
+  {
+    currentMillis = millis();
+    if ((currentMillis - prevMillisArtefacto > intervalArtefacto) || (started == 0))
+    {
+      horaActual = fecha.substring(11, 16);
+      horaActual.replace(":", "");
+      Serial.println("Hora Actual: " + horaActual + " > " + aireMin + " < " + aireMax);
+      if ((horaActual.toInt() > aireMin) && (horaActual.toInt() < aireMax))
+      {
+        Serial.println("Encendido automatico de Aire");
+        enciendeArtefacto(rAire);
+      }
+      else
+      {
+        Serial.println("Apagado automatico de Aire");
+        apagaArtefacto(rAire);
+      }
+      prevMillisArtefacto = millis();
+    }
+  }
+  /********************************
+ * Lectura de temperatura y ph
+ *******************************/
   currentMillis = millis();
   if ((currentMillis - prevMillisLectura > intervalLectura) || (started == 0))
   {
@@ -272,32 +303,40 @@ void loop()
     if (numberOfDevices > 0)
     {
       lecturaTemp();
-    }
-    else
-    {
-      tempC = 0;
-    }
 
-    if (tempC > tempMax)
-    {
-      Serial.print(F("\tVentilador ON"));
-      enciendeArtefacto(ventilador);
-    }
-    else
-    {
-      Serial.print(F("\tVentilador OFF"));
-      apagaArtefacto(ventilador);
-    }
+      if (tempC > tempMax)
+      {
+        Serial.print(F("\tVentilador ON"));
+        enciendeArtefacto(rVentilador);
+        apagaArtefacto(rCalefactor);
+      }
+      else
+      {
+        if (tempC < tempProm)
+        {
+          Serial.print(F("\tVentilador OFF"));
+          apagaArtefacto(rVentilador);
+        }
+      }
 
-    if (tempC < tempMin)
-    {
-      Serial.println(F("\tCalefactor: ON"));
-      enciendeArtefacto(rCalefactor);
+      if (tempC < tempMin)
+      {
+        Serial.println(F("\tCalefactor: ON"));
+        enciendeArtefacto(rCalefactor);
+        apagaArtefacto(rVentilador);
+      }
+      else
+      {
+        if (tempC > tempProm)
+        {
+          Serial.println(F("\tCalefactor: OFF"));
+          apagaArtefacto(rCalefactor);
+        }
+      }
     }
     else
     {
-      Serial.println(F("\tCalefactor: OFF"));
-      apagaArtefacto(rCalefactor);
+      tempC = -1;
     }
     prevMillisLectura = millis();
     ;
@@ -305,6 +344,11 @@ void loop()
 
     pantallaResult();
   }
+
+  /********************************
+ * Envio de datos al servidor
+ *******************************/
+
   if (currentMillis - prevMillisPutData > intervalPutData)
   {
     prevMillisPutData = millis();
@@ -313,34 +357,53 @@ void loop()
   started = 1;
 }
 
-void conectarWifi()
+void luzAuto()
 {
-  /* Nuevo codigo conexion WiFi*/
-  WiFi.init(&Serial1);
-  while (status != WL_CONNECTED)
+  currentMillis = millis();
+  horaActual = fecha.substring(11, 16);
+  horaActual.replace(":", "");
+
+  if ((currentMillis - prevMillisArtefacto > intervalArtefacto) || (started == 0))
   {
-    Serial.print(F("Conectandose a SSID: "));
-    Serial.println(ssid);
-    // Connect to WPA/WPA2 network
-    status = WiFi.begin(ssid, pass);
+    Serial.println("LUZ DIA: " + horaActual + " - " + luzDiaMin + " - " + luzDiaMax);
+
+    if ((horaActual.toInt() > luzDiaMin) && (horaActual.toInt() < luzDiaMax) && setDia == 0)
+    {
+      Serial.println("Enciende Dia");
+      amanecer();
+      setDia = 1;   // Variable controla el encendio solo una vez durante el periodo
+      setNoche = 0; // Reseetea a cero la variable para cuando entre en Noche ejecute la funcion anochecer()
+    }
+    Serial.println("LUZ NOCHE: " + horaActual + " - " + luzNocheMin + " - " + luzNocheMax);
+    if (((horaActual.toInt() > luzNocheMin) || (horaActual.toInt() < luzNocheMax)) && (setNoche == 0))
+    {
+      Serial.println("Enciende Noche");
+      anochecer();
+      setNoche = 1;
+      setDia = 0;
+    }
+    prevMillisArtefacto = millis();
   }
-  Serial.println(F("Conexion exitosa: "));
 }
 
-int freeRam()
+void conectarWifi()
 {
-  extern int __heap_start, *__brkval;
-  int v;
-  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+  if (status != WL_CONNECTED)
+  {  
+    WiFi.init(&Serial1);
+    while (status != WL_CONNECTED)
+    {
+      Serial.print(F("Conectandose a SSID: "));
+      Serial.println(ssid);
+      status = WiFi.begin(ssid, pass);
+    }
+    Serial.println(F("Conexion exitosa: "));
+  }
 }
 
 void getDate()
 {
-  if (status != WL_CONNECTED)
-  {
     conectarWifi();
-  }
-
   if (!client.connect(server, 80))
   {
     Serial.println(F("ERROR - getDate: Connection failed"));
@@ -361,7 +424,6 @@ void getDate()
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders))
   {
-    Serial.println(F("Invalid response"));
     return;
   }
   fecha = "";
@@ -380,14 +442,9 @@ void getDate()
 
 void getConfigAll()
 {
-  if (status != WL_CONNECTED)
-  {
-    conectarWifi();
-  }
-
+  conectarWifi();
   if (!client.connect(server, 80))
   {
-    Serial.println(F("Connection failed"));
     conectarWifi();
     return;
   }
@@ -401,10 +458,6 @@ void getConfigAll()
   {
     Serial.println(F("Failed to send request"));
     return;
-  }
-  else
-  {
-    Serial.println(F("OK send Request"));
   }
 
   // Skip HTTP headers
@@ -497,16 +550,15 @@ void getConfigAll()
   }
   free(buffId);
 
-  /* char* salida = (char*) malloc(5);
-  salida[0]='H';salida[1]='o';salida[2]='l';salida[3]='a';salida[4]='\0';
-  Serial.print(salida);
-  free(salida);
-  */
-  Serial.println(F("==== Configuraciones ==== \n"));
+  tempProm = (tempMax + tempMin) / 2;
+  
+  /*Serial.println(F("==== Configuraciones ==== \n"));
   Serial.print(F("tempMin es: "));
   Serial.println(String(tempMin));
   Serial.print(F("tempMax es: "));
   Serial.println(String(tempMax));
+  Serial.print(F("Temperatura Promedio es: "));
+  Serial.println(String(tempProm));
   Serial.print(F("phMin es: "));
   Serial.println(String(phMin));
   Serial.print(F("phMax es: "));
@@ -528,7 +580,7 @@ void getConfigAll()
   Serial.print(F("aireMax es: "));
   Serial.println(String(aireMax));
   Serial.print(F("NivelAgua es: "));
-  Serial.println(String(nivelAgua));
+  Serial.println(String(nivelAgua));*/
 
   client.flush();
   client.stop();
@@ -595,9 +647,9 @@ void getArtefact()
         }
       }
       Serial.println(F("Configuraciones"));
-                Serial.print(buffId);
-                Serial.print(" - ");
-                Serial.println(buffVal);
+      Serial.print(buffId);
+      Serial.print(" - ");
+      Serial.println(buffVal);
       if (strcmp(buffId, "\"1") == 0)
       {
         scalefactor = atoi(buffVal);
@@ -623,7 +675,7 @@ void getArtefact()
     }
   }
   free(buffId);
-  Serial.println(F("==== Artefactos ==== \n"));
+  /*Serial.println(F("==== Artefactos ==== \n"));
   Serial.print(F("Calefactor es: "));
   Serial.println(String(scalefactor));
   Serial.print(F("Ventilador es: "));
@@ -633,49 +685,101 @@ void getArtefact()
   Serial.print(F("Filtro es: "));
   Serial.println(String(sfiltro));
   Serial.print(F("Aire es: "));
-  Serial.println(String(saire));
+  Serial.println(String(saire));*/
 
   client.flush();
   client.stop();
 }
-/*
-void putData(){
-  Serial.println();
-    if (status != WL_CONNECTED)
+
+
+void getModo()
+{
+  if (status != WL_CONNECTED)
   {
-      conectarWifi();
+    conectarWifi();
   }
-  Serial.println(F("PUTDATA Starting connection to server..."));
-  // if you get a connection, report back via serial
-  
-    if (!client.connect(server, 80)) {
-        Serial.println(F("ERROR - putData: Connection failed"));
-        conectarWifi();
-        return;
+
+  if (!client.connect(server, 80))
+  {
+    Serial.println(F("Connection failed"));
+    conectarWifi();
+    return;
+  }
+  Serial.print(fecha);
+  Serial.print(F(" - Buscando configuracion de artefactos  -  "));
+  client.println(F("GETMODE /ListenArduino.php?idacuario=1 HTTP/1.0"));
+  client.println(F("Host: happypez.tk"));
+  client.println(F("Connection: close"));
+
+  if (client.println() == 0)
+  {
+    Serial.println(F("Failed to send request"));
+    return;
+  }
+  else
+  {
+    Serial.println(F("OK send Request"));
+  }
+
+  // Skip HTTP headers
+  char endOfHeaders[] = "\r\n\r\n";
+  if (!client.find(endOfHeaders))
+  {
+    Serial.println(F("Invalid response"));
+    return;
+  }
+
+  char *buffId = (char *)malloc(16);
+  char *buffVal = NULL;
+  byte i = 0;
+  byte j = 0;
+  while (client.available())
+  {
+    char c = client.read();
+    if (c != '|')
+    {
+      buffId[i] = c;
+      i++;
+      buffId[i] = '\0';
     }
-      Serial.print(F(" PUTDATA  "));
-
-      String peticionHTTP = "PUTDATA /MCS/Acuario/ListenArduino.php?idacuario=1&tempC=" + String(tempC) + "&ph=" + String(Ph) + "&nivel=ok";
-      peticionHTTP = peticionHTTP + " HTTP/1.1\r\n";
-      peticionHTTP = peticionHTTP + "Host: 201.238.201.51\r\n\r\n";
-    
-      client.println(peticionHTTP);
-      client.println("Connection: close");
-      client.println();
-      
-      while (client.available()) {
-      char c = client.read();
-      Serial.write(c);
+    else
+    {
+      for (j = 0; j <= i; j++)
+      {
+        if (buffId[j] == ';')
+        {
+          buffId[j] = '\0';
+          buffVal = buffId + j + 1;
+        }
       }
+      if (strcmp(buffId, "3") == 0)
+      {
+        modoLuz = atoi(buffVal);
+      }
+      if (strcmp(buffId, "4") == 0)
+      {
+        modoFiltro = atoi(buffVal);
+      }
+      if (strcmp(buffId, "5") == 0)
+      {
+        modoAire = atoi(buffVal);
+      }
+      j = 0;
+      i = 0;
+    }
+  }
+  free(buffId);
+  /*Serial.println(F("==== Artefactos ==== \n"));
+  Serial.print(F("Modo Luz es: "));
+  Serial.println(String(modoLuz));
+  Serial.print(F("Modo Filtro es: "));
+  Serial.println(String(modoFiltro));
+  Serial.print(F("Modo Aire es: "));
+  Serial.println(String(modoAire));*/
 
-  // if the server's disconnected, stop the client
-  if (!client.connected()) {
-    Serial.println();
-    Serial.println("Disconnecting from server...");
-    client.stop();
-  
+  client.flush();
+  client.stop();
 }
-*/
 
 void putData()
 {
@@ -691,7 +795,7 @@ void putData()
     return;
   }
   Serial.print(F("PUTDATA result: "));
-  String peticion = "PUTDATA /ListenArduino.php?idacuario=1&tempC=" + String(tempC) + "&ph=" + String(Ph) + "&nivel=ok HTTP/1.0";
+  String peticion = "PUTDATA /ListenArduino.php?idacuario=1&tempC=" + String(tempC) + "&ph=" + String(Ph) + "&nivel=" + nivel + "HTTP/1.0";
 
   client.println(peticion);
   client.println(F("Host: 201.238.201.51"));
@@ -710,7 +814,8 @@ void putData()
     Serial.println(F("Invalid response"));
     return;
   }
-  char *resp = "";
+  char *resp;
+  strcpy(resp, "");
   byte i = 0;
   while (client.available())
   {
@@ -790,7 +895,7 @@ void pantallaResult()
   lcd.setCursor(0, 1);
   lcd.print("Temp :");
   lcd.setCursor(6, 1);
-  if (tempC == 85)
+  if (tempC == 85 || tempC == -1)
   {
     lcd.print("Not Connected");
   }
@@ -799,16 +904,9 @@ void pantallaResult()
     lcd.print(tempC, 2);
   }
   lcd.setCursor(0, 2);
-  lcd.print("Nivel:");
+  lcd.print("Nivel: ");
   lcd.setCursor(6, 2);
-  if (nivel == 0)
-  {
-    lcd.print(F("OK"));
-  }
-  else
-  {
-    lcd.print(F("NOK"));
-  }
+  lcd.print(nivel);
   lcd.setCursor(0, 3);
   fecha2 = fecha.substring(0, 16);
   lcd.print(fecha2);
@@ -816,14 +914,14 @@ void pantallaResult()
 
 void NivelLiquido()
 {
-  nivel = 1;
+  strcpy(nivel, "NOK");
   if (digitalRead(sNivelLiq) == HIGH)
   {
-    nivel = 1;
+    strcpy(nivel, "NOK");
   }
   else
   {
-    nivel = 0;
+    strcpy(nivel, "OK");
   }
 }
 
